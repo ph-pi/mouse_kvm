@@ -1,94 +1,125 @@
 #!/bin/python3
 
-from settings import DEBUG_KVM, BTN_ASSIGN,MONITOR_MODEL, MONITOR_SERIAL, MOUSE_DEV
-from dell_vcp import VCP_FEATURE
-import os, subprocess
-from mouse import Event, add_mouse_handler, read_mouse
+from ddcutil import VCP, get_vcp, set_vcp, to_hex_string
+from mouse import EVT, MouseEventManager
+from settings import (
+    BTN_ASSIGN,
+    DEVICE,
+    MULT_CLICK_DELAY_SEC,
+    UNPLUGED_SOURCE,
+    VCP_SWITCH_USB,
+    VCP_SWITCH_VIDEO_INPUTS,
+    PxP_DISABLE,
+    PxP_HALF,
+    VCP_input_source,
+    VCP_pxp_mode,
+    VCP_pxp_sub_source,
+)
+
+DEBUG = True
 
 
-ddc_cmd_base = ['ddcutil', '-l', MONITOR_MODEL, '-n', MONITOR_SERIAL, '--brief', '--noverify']
+class MonitorState:
+
+    def __init__(self):
+        self.state = []
+
+    def refresh(self):
+        self.state = get_vcp(VCP_input_source, VCP_pxp_mode,
+                             VCP_pxp_sub_source)
+
+    def get(self, code):
+        code = to_hex_string(code)
+        info = [row for row in self.state if row.code == code]
+        return VCP(code) if len(info) == 0 else info[0]
 
 
-
-def exec_cmd(args):	
-	result = subprocess.run(args, capture_output=True, text=True)
-	print(result)
-	if result.returncode != 0:
-		raise RuntimeError(" ".join(args), result.stderr)
-	return result.stdout
-
-def get_vcp(feature: VCP_FEATURE):
-	args = ddc_cmd_base + ['getvcp', feature.value]
-	print(f'EXEC ! {args}')
-	try:				
-		result = exec_cmd(args)
-		print(f'result = {result}')
-		data = result.rstrip('\n').split(' ')
-		if data[0] != 'VCP': raise RuntimeError(" ".join(args), 'invalid result format')
-		match data[2]:
-			case 'C':
-				return dict(type=data[2], current=data[3], maximum=data[4])
-			case 'SNC':
-				return dict(type=data[2], sl=data[3])
-			case 'CNC':
-				return dict(type=data[2], mh=data[3], ml=data[4], sh=data[5], sl=data[6])
-			case 'T':
-				return dict(type=data[2], text=data[3])
-			case _:
-				raise RuntimeError(" ".join(args), 'invalid result format')
-	except RuntimeError as err:
-		print(err.args)
-		return None
-
-def set_vcp(feature: VCP_FEATURE, value: str):
-	try:
-		return exec_cmd(ddc_cmd_base + ['setvcp', feature.value, value])
-	except RuntimeError as err:
-		print(err.args)
-		return None
+monitor_state = MonitorState()
 
 
-def dell_set_input_source(src_code):
-	os.system(f"ddcutil setvcp 0x60 {hex(src_code)}")
-
-def dell_set_pbp_mode(code):
-	os.system(f"ddcutil setvcp 0xe9 {hex(code)}")
-
-def dell_set_pip_pbp_sub(src_code):
-	os.system(f"ddcutil setvcp 0xe8 {hex(src_code)}")
+def key_code_to_mouse_button_id(code):
+    if 0x110 <= code <= 0x117:
+        return code - 0x110
+    raise Exception("the key code does not correspond to a mouse button")
 
 
-press_order = []
+def on_mouse_event(ev_type: int, ev_code: int | list[int], ev_value: int):
+    if DEBUG:
+        print(
+            f"Mouse event : ev_type={ev_type} ev_code={ev_code} ev_value={ev_value}"
+        )
 
-def cb_dbl_click(props):
-	global press_order
-	if DEBUG_KVM: print(f'single_mode {props.button}')
-	set_vcp(VCP_FEATURE.pbp_mode, '00')
-	set_vcp(VCP_FEATURE.input_source, BTN_ASSIGN[props.button])
-	press_order = []
+    vcp_inputs = [VCP_input_source, VCP_pxp_sub_source]
+    current_sources = [monitor_state.get(input).sl for input in vcp_inputs]
+    current_pxp_mode = monitor_state.get(VCP_pxp_mode).sl
 
-def cb_click(props):
-	global press_order
-	if len(press_order) == 1:
-		if DEBUG_KVM: print(f'set_active {props.button}')
+    match ev_type:
+        case EVT.CLICK:
+            match ev_value:
+                case 1:  # single click
+                    btn = key_code_to_mouse_button_id(ev_code)
+                    if current_pxp_mode == PxP_DISABLE:
+                        if DEBUG:
+                            print("switch input source")
+                        set_vcp(VCP_input_source,
+                                BTN_ASSIGN[btn])  # Set Input Source
+                    else:
+                        if btn == 0:
+                            if VCP_SWITCH_USB is not None:
+                                if DEBUG:
+                                    print("switch USB")
+                                set_vcp(*VCP_SWITCH_USB)  # Set Input Source
+                case 2:  # double click
+                    btn = key_code_to_mouse_button_id(ev_code)
+                    if DEBUG:
+                        print(f"switch to unique source : {BTN_ASSIGN[btn]}")
+                    set_vcp(VCP_pxp_mode, "00")  # Disable PBP
+                    set_vcp(VCP_input_source,
+                            BTN_ASSIGN[btn])  # Set Input Source
+        case EVT.SEQ:
+            if len(ev_value) == 4:  # 2 press + 2 release
+                target_sources = [
+                    BTN_ASSIGN[key_code_to_mouse_button_id(key)]
+                    for key in ev_value if key >= 0
+                ]
+                if current_pxp_mode != PxP_DISABLE:
+                    if (current_sources[0] == target_sources[1]
+                            or current_sources[1] == target_sources[0]):
+                        if VCP_SWITCH_VIDEO_INPUTS is not None:
+                            set_vcp(*VCP_SWITCH_VIDEO_INPUTS)
+                            current_sources.reverse()
+                        elif UNPLUGED_SOURCE is not None:
+                            if current_sources[0] == target_sources[1]:
+                                set_vcp(VCP_input_source, UNPLUGED_SOURCE)
+                                set_vcp(VCP_pxp_sub_source, target_sources[1])
+                                current_sources = [
+                                    UNPLUGED_SOURCE, target_sources[1]
+                                ]
+                            else:
+                                set_vcp(VCP_pxp_sub_source, UNPLUGED_SOURCE)
+                                set_vcp(VCP_input_source, target_sources[0])
+                                current_sources = [
+                                    target_sources[0], UNPLUGED_SOURCE
+                                ]
+                        else:
+                            set_vcp(VCP_pxp_mode, PxP_DISABLE)  # Disable PBP
+                            current_pxp_mode == PxP_DISABLE
 
-	if len(press_order) > 1:
-		if DEBUG_KVM: print(f'set_pbp {press_order[0]} {press_order[1]}')
-		dell_set_pbp_mode(0x0) # pbp inactive
-		dell_set_input_source(BTN_ASSIGN[press_order[0]])
-		dell_set_pip_pbp_sub(BTN_ASSIGN[press_order[1]])
-		dell_set_pbp_mode(0x24) # pbp active
+                for vcp, curr, target in zip(vcp_inputs, current_sources,
+                                             target_sources):
+                    if curr != target:
+                        set_vcp(vcp, target)
 
-	press_order = []
+                if current_pxp_mode == PxP_DISABLE:
+                    set_vcp(VCP_pxp_mode, PxP_HALF)
+        case EVT.WHEEL:
+            pass
 
-def cb_pressed(props):
-	global press_order
-	press_order.append(props.button)
+    monitor_state.refresh()
 
 
-if __name__ == '__main__':
-	# add_mouse_handler(Event.CLICK, cb_click)
-	add_mouse_handler(Event.DBL_CLICK, cb_dbl_click)
-	# add_mouse_handler(Event.PRESSED, cb_pressed)
-
-	read_mouse(MOUSE_DEV)
+if __name__ == "__main__":
+    monitor_state.refresh()
+    mem = MouseEventManager(2, MULT_CLICK_DELAY_SEC)
+    mem.set_handler(on_mouse_event)
+    mem.event_loop(DEVICE)

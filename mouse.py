@@ -1,97 +1,161 @@
-import os, fcntl, time, copy
-from enum import IntEnum
+import fcntl
+import os
+import struct
+import sys
+import time
+import types
 from dataclasses import dataclass
 
-from settings import DEBUG_MOUSE, DBL_CLICK_DELAY
+EVT = types.SimpleNamespace(CLICK=0, SEQ=1, WHEEL=2)
 
-class Event(IntEnum):
-	PRESSED=0
-	RELEASED=1
-	MOVE=2
-	CLICK=3
-	DBL_CLICK=4
-
-
-event_cb = [[] for _ in range(len(Event))]
+EV_KEY = 0x01
+EV_REL = 0x02
+REL_WHEEL = 0x08
 
 @dataclass
-class Props:
-	x: int
-	y: int
-	button: int
-	buttons: int
-	x_overflow: bool
-	y_overflow: bool
+class Event:
+    EVENT_FORMAT = "llHHI"
 
-	def __init__(self, data: list):
-		left_btn, right_btn, middle_btn, _, x_sign, y_sign, x_overflow, y_overflow = [(data[0] & (2**i)) != 0 for i in range(8)]
-		self.buttons = data[0] & 0x7
-		self.x = x_sign * -256 + data[1]
-		self.y = y_sign * -256 + data[2]
-		self.x_overflow=x_overflow
-		self.y_overflow=y_overflow
-		self.button = -1
+    event_time: int     # we use a single python int to store tv_sec & tv_usec because in Python 3, the int type has no max limit
+    event_type: int
+    event_code: int
+    event_value: int
+
+    def __init__(self, event_data):
+        if len(event_data) == struct.calcsize(self.EVENT_FORMAT):
+            (tv_sec, tv_usec, self.event_type, self.event_code, self.event_value) = (
+                struct.unpack(self.EVENT_FORMAT, event_data)
+            )
+            self.event_time = tv_sec * 1000000 + tv_usec
+        else:
+            raise Exception("event_data with invalid format", event_data)
 
 
-def read_mouse(dev):
-	block_mode = True
-	stream = open(dev, 'rb')
-	prev_buttons = 0
-	click_history = [[],[],[]]
+class MouseEventManager:
+    """The mouse event manager class.
+    """
+    def __init__(self, max_clicks: int = 2, dbl_click_delay_sec: float = 0.4):
+        """Mouse event manager constructor.
 
-	def stream_nonblock(stream):
-		global block_mode
-		fcntl.fcntl(stream, fcntl.F_SETFL, fcntl.fcntl(stream, fcntl.F_GETFL) | os.O_NONBLOCK)
-		block_mode = True
+        Args:
+            max_clicks (int): Maximum multiclicks to capture (2 for double-clicks)
+            dbl_click_delay_sec (float, optional): Multi-click sequence timeout expressed in seconds. Defaults to 0.4 seconds.
+        """
+        self.seq: list[Event] = []
+        self.max_clicks = max_clicks
+        self.max_delay_usec: int = int(dbl_click_delay_sec * 1000000)
+        self.has_pending_multiclick = False
+        self.handler = None
 
-	def stream_block(stream):
-		global block_mode
-		fcntl.fcntl(stream, fcntl.F_SETFL, fcntl.fcntl(stream, fcntl.F_GETFL) & ~os.O_NONBLOCK)
-		block_mode = False
+    def _store_event(self, ev: Event):
+        if 0 <= ev.event_value <= 1:
+            self.seq.append(ev)
 
-	def notify(ev, props):
-		if DEBUG_MOUSE: print(f'Mouse event : {ev.name} {vars(props)}')
-		for cb in event_cb[ev.value]:
-			cb(copy.deepcopy(props))
+    def _emit(self, ev_type: int, ev_code: int, ev_value: int | list[int]):
+        if self.handler:
+            self.handler(ev_type, ev_code, ev_value)
 
-	try:
-		while True:
-			block = stream.read(3)
-			t = time.time()
-			if block is not None and len(block) == 3:
-				props = Props(block)
+    def set_handler(self, cb: callable):
+        self.handler = cb
 
-				if props.x != 0 and props.y != 0:	notify(Event.MOVE, props)
-				if (state_change := props.buttons ^ prev_buttons) != 0:
-					prev_buttons = props.buttons
-					for i, mask in enumerate([1, 2, 4]):
-						if state_change & mask == 0: continue 
-						props.button = i
-						if props.buttons & mask == 0:  # released button
-							notify(Event.RELEASED, props)
-							if len(click_history[i]) == 2:
-								notify(Event.DBL_CLICK, click_history[i][0]['props'])
-								click_history[i] = []
-							elif t - click_history[i][0]['pressed'] > DBL_CLICK_DELAY:
-								notify(Event.CLICK, click_history[i][0]['props'])
-								click_history[i] = []
-							else:
-								click_history[i][-1]['released'] = True
-								stream_nonblock(stream)
-						else:
-							notify(Event.PRESSED, props)
-							click_history[i].append(dict(pressed=t, released=False, props=copy.deepcopy(props)))
+    def flush_events(self, event_time: int):
+        """Emits events for all closed sequences. The event_time argument allows to detect the timemout for pending sequences (a click can no longer be transformed into a double-click)
 
-			for i in range(3):
-				if len(click_history[i]) > 0 and click_history[i][0]['released'] == True and (t - click_history[i][0]['pressed']) > DBL_CLICK_DELAY:
-					notify(Event.CLICK, click_history[i].pop(0)['props'])
+        Args:
+            event_time (int): the time used to check if pending sequence has expired
+        """
+        self.has_pending_multiclick = False
+        if len(self.seq) > 1:
+            n_consecutive = 0
+            for ev in self.seq[: self.max_clicks * 2]:
+                if ev.event_code != self.seq[0].event_code:
+                    break
+                n_consecutive += 1
+            while n_consecutive > 0 and (
+                len(self.seq) > n_consecutive
+                or event_time - self.seq[0].event_time > self.max_delay_usec
+            ):
+                n = min(self.max_clicks, n_consecutive // 2)
+                if n == 0:
+                    break
+                self._emit(EVT.CLICK, self.seq[0].event_code, n)
+                n_consecutive -= n * 2
+                del self.seq[: n * 2]
 
-			if block_mode == False and len(click_history[0]) + len(click_history[1]) + len(click_history[2]) == 0: stream_block(stream)
+            self.has_pending_multiclick = n_consecutive == len(self.seq)
 
-	except OSError:		
-		pass
-	print('Mouse KVM : lost devive. Unplugged ?')
-	
+        if (
+            len(self.seq) > 1
+            and len(self.keys_pressed()) == 0
+            and event_time - self.seq[0].event_time > self.max_delay_usec
+        ):
+            self._emit(EVT.SEQ, 0, self.keys_sequence())
+            self.seq = []
 
-def add_mouse_handler(ev: Event, fn):
-	event_cb[ev.value].append(fn)
+    def keys_sequence(self) -> list[int]:
+        """Return all key events occuring while at least one key is still pressed.
+
+        Returns:
+            list[int]: A list of key ids. A positive value means "press event", a negative value means "release event"
+        """
+        return [
+            ev.event_code * (1 if ev.event_value == 1 else -1) for ev in self.seq
+        ]
+
+    def keys_pressed(self) -> list[int]:
+        """
+        Returns:
+            list[int]: A list of the currently pressed keys
+        """
+        pressed = {}
+        for ev in self.seq:
+            if ev.event_value == 1:
+                pressed[ev.event_code] = None
+            elif ev.event_code in pressed:
+                del pressed[ev.event_code]
+        return list(pressed.keys())
+
+    def on_event(self, ev: Event):
+        """Input event handler
+
+        Args:
+            ev (Event): An event as defined in https://www.kernel.org/doc/Documentation/input/event-codes.txt
+        """
+        if ev.event_type == EV_KEY:
+            self._store_event(ev)
+
+        if ev.event_type == EV_REL and ev.event_code == REL_WHEEL:
+            self.flush_events(ev.event_time + self.max_delay_usec)
+            s = 1 - 2 * (ev.event_value & 0x80000000 > 0)
+            self._emit(EVT.WHEEL, s, self.keys_sequence())
+
+    def has_pending_sequence(self) -> bool:
+        """
+        Returns:
+            bool: True when some sequences are not closed.
+        """
+        return self.has_pending_multiclick
+
+    def event_loop(self, device: str):
+        """Read a mouse events device file to produce custom events within an endless loop.
+
+        Args:
+            device (str): the device file (should be like "/dev/input/.../<name>-event-mouse")
+        """
+        try:
+            with open(device, "rb") as stream:
+                while True:
+                    event_data = stream.read(struct.calcsize(Event.EVENT_FORMAT))
+                    if event_data is not None:
+                        self.on_event(Event(event_data))
+
+                    event_time = time.time_ns() // 1000
+                    self.flush_events(event_time)
+
+                    state = fcntl.fcntl(stream, fcntl.F_GETFL)
+                    if self.has_pending_sequence() == ((state & os.O_NONBLOCK) == 0):
+                        fcntl.fcntl(stream, fcntl.F_SETFL, state ^ os.O_NONBLOCK)
+
+        except OSError as e:
+            print(f"Can't read device {device}: {e}")
+            sys.exit(1)
