@@ -1,6 +1,8 @@
 from dataclasses import dataclass
 import subprocess
 from time import monotonic_ns, sleep
+
+from pyparsing import Optional
 from settings import MONITOR_MODEL, MONITOR_SERIAL
 import re
 
@@ -122,7 +124,7 @@ def get_vcp(*features: list[str]) -> list[VCP]:
     return response
 
 
-def set_vcp(feature: str, value: str) -> str | None:
+def set_vcp(feature: str, value: str) -> Optional[str]:
     """Wrapper to ddcutil Set VCP command.
 
     Args:
