@@ -79,45 +79,43 @@ def get_vcp(*features: list[str]) -> list[VCP]:
             data = row.split(" ")
             if data[0] != "VCP":
                 break
-            match data[2]:
-                case "C":
-                    response.append(
-                        VCP(
-                            code=to_hex_string(data[1]),
-                            type=data[2],
-                            current=to_hex_string(data[3]),
-                            maximum=to_hex_string(data[4]),
-                        )
+            if data[2] == "C":
+                response.append(
+                    VCP(
+                        code=to_hex_string(data[1]),
+                        type="C",
+                        current=to_hex_string(data[3]),
+                        maximum=to_hex_string(data[4]),
                     )
-                case "SNC":
-                    response.append(
-                        VCP(
-                            code=to_hex_string(data[1]),
-                            type=data[2],
-                            sl=to_hex_string(data[3]),
-                        )
+                )
+            if data[2] == "SNC":
+                response.append(
+                    VCP(
+                        code=to_hex_string(data[1]),
+                        type="SNC",
+                        sl=to_hex_string(data[3]),
                     )
-                case "CNC":
-                    response.append(
-                        VCP(
-                            code=to_hex_string(data[1]),
-                            type=data[2],
-                            mh=to_hex_string(data[3]),
-                            ml=to_hex_string(data[4]),
-                            sh=to_hex_string(data[5]),
-                            sl=to_hex_string(data[6]),
-                        )
+                )
+            if data[2] == "CNC":
+                response.append(
+                    VCP(
+                        code=to_hex_string(data[1]),
+                        type="CNC",
+                        mh=to_hex_string(data[3]),
+                        ml=to_hex_string(data[4]),
+                        sh=to_hex_string(data[5]),
+                        sl=to_hex_string(data[6]),
                     )
-                case "T":
-                    response.append(
-                        VCP(
-                            code=to_hex_string(data[1]),
-                            type=data[2],
-                            text=to_hex_string(data[3]),
-                        )
+                )
+            if data[2] == "T":
+                response.append(
+                    VCP(
+                        code=to_hex_string(data[1]),
+                        type="T",
+                        text=to_hex_string(data[3]),
                     )
-                case _:
-                    pass
+                )
+            
     except RuntimeError as err:
         print(err.args)
 
