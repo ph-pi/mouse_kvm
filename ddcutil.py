@@ -123,7 +123,7 @@ def get_vcp(*features: list[str]) -> list[VCP]:
     return response
 
 
-def set_vcp(feature: str, value: str) -> str:
+def set_vcp(feature: str, value: str) -> str | None:
     """Wrapper to ddcutil Set VCP command.
 
     Args:
@@ -148,4 +148,4 @@ def set_vcp(feature: str, value: str) -> str:
 
     except RuntimeError as err:
         print(err.args)
-        return ""
+        return None
