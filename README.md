@@ -10,9 +10,9 @@ This utility allows you to use a dedicated mouse to control main features of a K
 - Wheel events are supported, but no action is associated with them at the moment.
 
 ## Requirements
-- A linux OS running udev (linux > 2.6) with root privilege. Tested with Ubuntu 24.04.1 LTS under wayland and Debian GNU/Linux 11 (bullseye) on my raspberry.
+- A linux OS running udev (linux > 2.6) with root privilege. Tested with Ubuntu 24.04.1 LTS under wayland and Debian GNU/Linux 11 (bookworm) on my raspberry.
 - A dedicated mouse. Each button is assigned to a video source. A udev configuration is required to prevent this mouse from interfering with the graphical environment.
-- Python 3.10 - No extra module to install.
+- Python 3.10 - No extra module to install. It could work with 3.9 but you need to remove some typehints not avalaible in 3.9.
 - At least one of the computers connected to the KVM must run the script. Multiple instances is not an issue. This way, you can use your KVM even if you are not allowed to install anything on one of your computers due to privilege restrictions.
 - ddcutil program
 
