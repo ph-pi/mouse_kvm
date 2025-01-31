@@ -41,7 +41,7 @@ ddcutil program is required. The kvm script has been tested with ddcutil version
 https://www.ddcutil.com/install/
 
 ## Python script
-Create a mouse_KVM folder in /usr/local and copy all files with the .py extention (ddcutil.py, kvm.py, mouse.py, settings.py) to this folder. As udev configuration will impact all users, the script must be accessible for all users.
+Create a folder /usr/local/mouse_kvm and copy all files with the .py extention (ddcutil.py, kvm.py, mouse.py, settings.py) to this folder. As udev configuration will impact all users, the script must be accessible for all users.
 The main entry file is kvm.py .
 mouse.py and ddcutil.py are two modules used by kvm.py .
 settings.py contains all what you need to configure.
@@ -89,6 +89,14 @@ ACTION!="remove", KERNEL=="event[0-9]*", \
    ACTION=="add", \
    ENV{LIBINPUT_IGNORE_DEVICE}="1", \
    GROUP="input", \
-   RUN+="/usr/local/mouse_KVM/kvm.py"
+   RUN+="/usr/local/mouse_kvm/kvm.py"
 ```
 Reboot the computer.
+
+## Troubleshooting
+
+To debug udev configuration, you can try:
+```bash
+udevadm control --log-priority=debug
+journalctl -f
+```
