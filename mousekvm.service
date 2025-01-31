@@ -1,0 +1,6 @@
+[Unit]
+Description=My mouse drive a KVM !
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/mouse_kvm/kvm.py

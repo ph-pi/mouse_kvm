@@ -41,8 +41,9 @@ ddcutil program is required. The kvm script has been tested with ddcutil version
 https://www.ddcutil.com/install/
 
 ## Python script
-Create a folder /usr/local/mouse_kvm and copy all files with the .py extention (ddcutil.py, kvm.py, mouse.py, settings.py) to this folder. As udev configuration will impact all users, the script must be accessible for all users.
-The main entry file is kvm.py .
+Create a folder /usr/local/mouse_kvm and copy all files with the .py extention (ddcutil.py, kvm.py, mouse.py, settings.py) to this folder.
+The main python entry file is kvm.py, but the udev RUN command could not be used to run long task or to start deamon.
+To launch the script, a systemd service is defined and is started from an udev rule.
 mouse.py and ddcutil.py are two modules used by kvm.py .
 settings.py contains all what you need to configure.
 
@@ -73,6 +74,23 @@ Adding an udev rule addresses two points :
 - Tell the graphical environnement to not manage event from this mouse as a standard mouse. Please don't move the cursor when I touch this mouse !
 - Automaticaly launch the script when the dedicated mouse is dedected (on mouse pluggin event, or after a reboot). 
 
+### We need to declare a systemd service
+
+Create file /etc/systemd/system/mousekvm.service
+```
+[Unit]
+Description=My mouse drive a KVM !
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/mouse_kvm/kvm.py
+```
+
+```bash
+sudo chmod 664 /etc/systemd/system/mousekvm.service
+sudo systemctl daemon-reload
+```
+
 ### Configure an udev rule for this device
 You'll need to retrieve the ID_VENDOR_ID and ID_MODEL_ID values with the udevadm command using the same mouse device as that defined in the file settings.py.
 ```bash
@@ -81,7 +99,7 @@ udevadm info -n /dev/input/<... mouse device path> | grep "_ID"
 
 Based on the template below, create the file /etc/udev/rules.d/99-mouse_kvm.rules.
 
-Just replace the values of ID_VENDOR_ID and ID_MODEL_ID by yours and modify the path to the kvm.py if needed.
+Just replace the values of ID_VENDOR_ID and ID_MODEL_ID by yours.
 ```
 ACTION!="remove", KERNEL=="event[0-9]*", \
    ENV{ID_VENDOR_ID}=="413c", \
@@ -89,7 +107,7 @@ ACTION!="remove", KERNEL=="event[0-9]*", \
    ACTION=="add", \
    ENV{LIBINPUT_IGNORE_DEVICE}="1", \
    GROUP="input", \
-   RUN+="/usr/local/mouse_kvm/kvm.py"
+   TAG+="systemd", ENV{SYSTEMD_WANTS}="mousekvm.service"
 ```
 Reboot the computer.
 
